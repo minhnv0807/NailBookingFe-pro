@@ -46,6 +46,7 @@ export interface BookingRequest {
   booking_time: string;
   customer_email?: string;
   notes?: string;
+  promo_code?: string;
   turnstile_token?: string;
 }
 
