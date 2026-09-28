@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Hand, Footprints, Sparkles, Scissors, Star, Droplets, ChevronDown, Clock, ArrowRight, ImageIcon } from "lucide-react";
 import Link from "next/link";
-import { api } from "@/lib/api";
-import { categoryLabels, categoryOrder, fallbackServices, formatDuration, formatPrice, groupServices, normalizeServices, orderedCategories, type PublicService } from "@/lib/service-utils";
+import { categoryLabels, formatDuration, formatPrice, groupServices, orderedCategories, type PublicService } from "@/lib/service-utils";
 import { useLanguage } from "@/context/LanguageContext";
 import { t } from "@/lib/translations";
+import { useShopCatalogue } from "@/lib/vitech/useShopCatalogue";
+import salonData from "@/data/salon-data.json";
 
 const icons: Record<string, React.ElementType> = {
   extensions_hands: Hand,
@@ -26,14 +27,7 @@ const gradients = [
 export default function Services() {
   const { lang } = useLanguage();
   const [openIndex, setOpenIndex] = useState(0);
-  const [services, setServices] = useState<PublicService[]>(fallbackServices());
-
-  useEffect(() => {
-    api.services.list().then((d: any) => {
-      const live = normalizeServices(d.services || []);
-      if (live.length) setServices(live);
-    }).catch(() => {});
-  }, []);
+  const { status, services } = useShopCatalogue();
 
   const grouped = groupServices(services);
   const cats = orderedCategories(grouped);
@@ -50,6 +44,31 @@ export default function Services() {
           <h2 className="text-4xl lg:text-5xl font-bold text-gradient">{t("services.title", lang)}</h2>
           <p className="text-gray-500 mt-4 max-w-lg mx-auto">{t("services.subtitle", lang)}</p>
         </motion.div>
+
+        {status === "loading" && (
+          <div className="space-y-3">
+            {[1, 2, 3].map((n) => (
+              <div key={n} className="bg-white rounded-2xl border border-pink-100/60 p-5 animate-pulse flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="w-11 h-11 rounded-xl bg-pink-100" />
+                  <div className="space-y-2">
+                    <div className="h-4 w-32 bg-pink-100 rounded" />
+                    <div className="h-3 w-20 bg-pink-50 rounded" />
+                  </div>
+                </div>
+                <div className="h-4 w-16 bg-pink-100 rounded" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {status === "failed" && (
+          <div className="bg-white rounded-2xl border border-pink-100 p-8 text-center text-gray-500 shadow-sm">
+            <p className="text-lg">Our price list isn&apos;t available right now — please call the salon on {salonData.salon.phone}</p>
+          </div>
+        )}
+
+        {status === "ready" && (
         <div className="space-y-3">
           {cats.map((catKey, i) => {
             const Icon = icons[catKey] || Sparkles;
@@ -90,6 +109,7 @@ export default function Services() {
             );
           })}
         </div>
+        )}
       </div>
     </section>
   );

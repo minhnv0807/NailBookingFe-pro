@@ -1,3 +1,4 @@
+import { createVitechClient } from "./client";
 import { readVitechConfig } from "./config";
 
 // Next inlines NEXT_PUBLIC_* only where the property is written out in full,
@@ -7,3 +8,5 @@ export const vitechConfig = readVitechConfig({
   NEXT_PUBLIC_VITECH_SHOP_SLUG: process.env.NEXT_PUBLIC_VITECH_SHOP_SLUG,
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY,
 });
+
+export const vitech = createVitechClient(vitechConfig);
