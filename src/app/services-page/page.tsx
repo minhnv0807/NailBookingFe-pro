@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Hand, Footprints, Sparkles, Scissors, Star, Droplets, ChevronDown, ChevronUp, Clock, ArrowRight, ImageIcon } from "lucide-react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
-import { api } from "@/lib/api";
-import { categoryLabels, fallbackServices, formatDuration, formatPrice, groupServices, normalizeServices, orderedCategories, type PublicService } from "@/lib/service-utils";
+import { categoryLabels, formatDuration, formatPrice, groupServices, orderedCategories, type PublicService } from "@/lib/service-utils";
 import { useLanguage } from "@/context/LanguageContext";
 import { t } from "@/lib/translations";
+import { useShopCatalogue } from "@/lib/vitech/useShopCatalogue";
+import salonData from "@/data/salon-data.json";
 
 const icons: Record<string, React.ElementType> = {
   extensions_hands: Hand,
@@ -33,14 +34,7 @@ export default function ServicesPage() {
   const { lang } = useLanguage();
   const [search, setSearch] = useState("");
   const [openCategory, setOpenCategory] = useState<string | null>("extensions_hands");
-  const [services, setServices] = useState<PublicService[]>(fallbackServices());
-
-  useEffect(() => {
-    api.services.list().then((d: any) => {
-      const live = normalizeServices(d.services || []);
-      if (live.length) setServices(live);
-    }).catch(() => {});
-  }, []);
+  const { status, services } = useShopCatalogue();
 
   const filtered = services.filter((s) => s.name.toLowerCase().includes(search.toLowerCase()));
   const grouped = groupServices(filtered);
@@ -70,6 +64,30 @@ export default function ServicesPage() {
             />
           </div>
 
+          {status === "loading" && (
+            <div className="max-w-4xl mx-auto space-y-3">
+              {[1, 2, 3].map((n) => (
+                <div key={n} className="bg-white rounded-2xl border border-pink-100 p-6 animate-pulse flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-xl bg-pink-100" />
+                    <div className="space-y-2">
+                      <div className="h-4 w-32 bg-pink-100 rounded" />
+                      <div className="h-3 w-20 bg-pink-50 rounded" />
+                    </div>
+                  </div>
+                  <div className="w-10 h-10 rounded-full bg-pink-50" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {status === "failed" && (
+            <div className="max-w-4xl mx-auto bg-white rounded-2xl border border-pink-100 p-8 text-center text-gray-500 shadow-sm">
+              <p className="text-lg">Our price list isn&apos;t available right now — please call the salon on {salonData.salon.phone}</p>
+            </div>
+          )}
+
+          {status === "ready" && (
           <div className="max-w-4xl mx-auto space-y-3">
             {cats.map((catKey) => {
               const Icon = icons[catKey] || Sparkles;
@@ -160,6 +178,7 @@ export default function ServicesPage() {
               </div>
             )}
           </div>
+          )}
 
           <div className="text-center mt-10">
             <Link href="/" className="text-sm text-gray-400 hover:text-pink-500 transition-colors">{t("servicesPage.backToHome", lang)}</Link>

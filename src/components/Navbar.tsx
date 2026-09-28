@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Menu, X, Phone, CalendarDays, LogIn, User, LogOut, ClipboardList, Settings, Languages } from "lucide-react";
+import { Menu, X, Phone, CalendarDays, Languages } from "lucide-react";
 import Link from "next/link";
-import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { t } from "@/lib/translations";
 import BrandLogo from "@/components/BrandLogo";
@@ -11,10 +10,7 @@ import BrandLogo from "@/components/BrandLogo";
 export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
-  const { user, loading, logout } = useAuth();
   const { lang, toggleLang } = useLanguage();
-  const isAdmin = ["ADMIN", "MANAGER"].includes(user?.role || "");
-  const isStaff = user?.role === "STAFF";
 
   const navLinks = [
     { label: t("nav.home", lang), href: "/" },
@@ -28,40 +24,6 @@ export default function Navbar() {
     window.addEventListener("scroll", onScroll);
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
-
-  const accountLinks = (
-    <>
-      {user ? (
-        <>
-          <Link href="/my-bookings" className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium text-gray-600 hover:text-pink-600 hover:bg-pink-50 transition-all">
-            <ClipboardList size={16} />{t("nav.myBookings", lang)}
-          </Link>
-          {isAdmin && (
-            <Link href="/admin" className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium text-pink-700 bg-pink-50 hover:bg-pink-100 transition-all">
-              <Settings size={16} />{user?.role === "MANAGER" ? t("nav.manager", lang) : t("nav.admin", lang)}
-            </Link>
-          )}
-          {isStaff && (
-            <Link href="/staff" className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition-all">
-              <Settings size={16} />{t("nav.staff", lang)}
-            </Link>
-          )}
-          <button onClick={logout} className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium text-gray-600 hover:text-red-600 hover:bg-red-50 transition-all">
-            <LogOut size={16} />{t("nav.logout", lang)}
-          </button>
-        </>
-      ) : !loading ? (
-        <>
-          <Link href="/login" className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium text-gray-600 hover:text-pink-600 hover:bg-pink-50 transition-all">
-            <LogIn size={16} />{t("nav.signIn", lang)}
-          </Link>
-          <Link href="/register" className="flex items-center gap-1 px-4 py-2 rounded-full text-sm font-medium bg-gradient-to-r from-pink-500 to-rose-500 text-white hover:shadow-lg transition-all">
-            <User size={16} />{t("nav.register", lang)}
-          </Link>
-        </>
-      ) : null}
-    </>
-  );
 
   return (
     <nav
@@ -87,7 +49,6 @@ export default function Navbar() {
             <a href="tel:+447****2572" className="flex items-center gap-2 text-sm text-gray-600 hover:text-pink-600 transition-colors">
               <Phone size={16} />+44 7774 292572
             </a>
-            {accountLinks}
             <button
               onClick={toggleLang}
               className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold border border-pink-200 bg-white text-pink-600 hover:bg-pink-50 transition-all"
@@ -112,19 +73,6 @@ export default function Navbar() {
           {navLinks.map((link) => (
             <Link key={link.href} href={link.href} className="block px-4 py-3 rounded-xl text-gray-700 hover:text-pink-600 hover:bg-pink-50 font-medium transition-all" onClick={() => setMobileOpen(false)}>{link.label}</Link>
           ))}
-          {user ? (
-            <>
-              <Link href="/my-bookings" className="block px-4 py-3 rounded-xl text-gray-700 hover:text-pink-600 hover:bg-pink-50 font-medium transition-all" onClick={() => setMobileOpen(false)}>{t("nav.myBookings", lang)}</Link>
-              {isAdmin && <Link href="/admin" className="block px-4 py-3 rounded-xl text-pink-700 bg-pink-50 font-medium transition-all" onClick={() => setMobileOpen(false)}>{user?.role === "MANAGER" ? t("nav.manager", lang) : t("nav.admin", lang)}</Link>}
-              {isStaff && <Link href="/staff" className="block px-4 py-3 rounded-xl text-emerald-700 bg-emerald-50 font-medium transition-all" onClick={() => setMobileOpen(false)}>{t("nav.staff", lang)}</Link>}
-              <button onClick={() => { setMobileOpen(false); logout(); }} className="block w-full text-left px-4 py-3 rounded-xl text-red-600 hover:bg-red-50 font-medium transition-all">{t("nav.logout", lang)}</button>
-            </>
-          ) : !loading ? (
-            <>
-              <Link href="/login" className="block px-4 py-3 rounded-xl text-gray-700 hover:text-pink-600 hover:bg-pink-50 font-medium transition-all">{t("nav.signIn", lang)}</Link>
-              <Link href="/register" className="block px-4 py-3 rounded-xl text-gray-700 hover:text-pink-600 hover:bg-pink-50 font-medium transition-all">{t("nav.register", lang)}</Link>
-            </>
-          ) : null}
           <button
             onClick={() => { toggleLang(); setMobileOpen(false); }}
             className="flex items-center gap-2 px-4 py-3 rounded-xl text-gray-700 hover:text-pink-600 hover:bg-pink-50 font-medium transition-all w-full"

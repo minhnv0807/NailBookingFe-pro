@@ -1,23 +1,6 @@
 "use client";
 
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
-import { useAuth } from "@/context/AuthContext";
-import { API_BASE } from "@/lib/api";
-
-type Message = { role: "user" | "assistant"; content: string; imageUrl?: string | null };
-type ChatMode = "customer" | "staff" | "admin";
-
-type ModeMeta = {
-  title: string;
-  subtitle: string;
-  placeholder: string;
-  launchLabel: string;
-  intro: string;
-  starters: string[];
-  sendLabel: string;
-  allowImage: boolean;
-};
+import { useState } from "react";
 
 const contactLinks = [
   {
@@ -44,23 +27,6 @@ const contactLinks = [
 ];
 
 const APP_EDITION = String(process.env.NEXT_PUBLIC_APP_EDITION || "pro").toLowerCase();
-const SHOP_LANGUAGE = String(process.env.NEXT_PUBLIC_SHOP_LANGUAGE || "en").toLowerCase();
-
-function chatbotEndpointCandidates() {
-  const base = API_BASE.replace(/\/$/, "");
-  return [`${base}/api/chatbot`, `${base}/api/api/chatbot`];
-}
-
-function responseLanguageFor(text: string) {
-  const normalized = text.toLowerCase();
-  if (
-    /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(text) ||
-    /\b(xin chào|chào|tiếng việt|tieng viet|đặt lịch|dat lich|dịch vụ|dich vu|bảng giá|bang gia|giá|gia|móng|mong|làm nail|lam nail|tư vấn|tu van)\b/i.test(normalized)
-  ) {
-    return "vi";
-  }
-  return SHOP_LANGUAGE.startsWith("vi") ? "vi" : "en";
-}
 
 function publicFlag(value: string | undefined, fallback: boolean) {
   const normalized = String(value || "").trim().toLowerCase();
@@ -69,420 +35,52 @@ function publicFlag(value: string | undefined, fallback: boolean) {
   return fallback;
 }
 
-const CHATBOT_ENABLED = publicFlag(process.env.NEXT_PUBLIC_ENABLE_CHATBOT, APP_EDITION !== "basic");
 const SOCIAL_BUBBLES_ENABLED = publicFlag(process.env.NEXT_PUBLIC_ENABLE_SOCIAL_BUBBLES, APP_EDITION !== "basic");
 
-function modeMeta(mode: ChatMode): ModeMeta {
-  if (mode === "admin") {
-    return {
-      title: "Nail Lounge Admin Assistant",
-      subtitle: "Live operational answers for revenue, bookings, staffing, leave, and priorities.",
-      placeholder: "Ask about revenue, today’s bookings, staff gaps, leave queue, or an uploaded issue photo...",
-      launchLabel: "Ask assistant",
-      intro: "Hi. I can help with live operational questions, booking pressure, leave requests, staffing decisions, account totals, promo codes, revenue, calendar status, and the most urgent next actions from the live database context.",
-      starters: ["How many accounts are in the system?", "How many promo codes are active?", "What is today’s counted revenue?", "Summarise today’s operations"],
-      sendLabel: "Send",
-      allowImage: true,
-    };
-  }
-
-  if (mode === "staff") {
-    return {
-      title: "Nail Lounge Staff Assistant",
-      subtitle: "Quick help for schedule, assigned clients, leave, availability, and workload.",
-      placeholder: "Ask about your shift, next client, leave status, availability, or upload a reference photo...",
-      launchLabel: "Ask assistant",
-      intro: "Hi. I can help with your schedule, next clients, leave status, availability, workload, and a cautious review of any nail photo or screenshot you upload.",
-      starters: ["How many clients do I have today?", "What is my next booking?", "What is the status of my leave requests?", "Show my workload summary"],
-      sendLabel: "Send",
-      allowImage: true,
-    };
-  }
-
-  return {
-    title: "Nail Lounge Assistant",
-    subtitle: "Quick mobile-friendly help for customers.",
-    placeholder: "Ask about services, prices, booking, nail concerns...",
-    launchLabel: "Chat now",
-    intro: "Hi! I can help with services, prices, booking steps, salon info, simple policies, and even a cautious visual opinion if you upload a nail photo.",
-    starters: ["Prices", "Services", "How to book", "Can I show a nail photo?"],
-    sendLabel: "Send",
-    allowImage: true,
-  };
-}
-
-function detectMode(_pathname: string | null, role?: string | null): ChatMode {
-  if (role === "ADMIN" || role === "MANAGER") return "admin";
-  if (role === "STAFF") return "staff";
-  return "customer";
-}
-
-function defaultImagePrompt(mode: ChatMode) {
-  if (mode === "customer") {
-    return "Can you look at this photo and tell me whether the salon may be able to help, and whether I should contact the salon first?";
-  }
-  if (mode === "staff") {
-    return "Please review this image and tell me what matters for today’s work, booking notes, or escalation.";
-  }
-  return "Please review this image and tell me what matters operationally, what is confirmed, and what should be escalated.";
-}
-
-async function resizeImageToDataUrl(file: File) {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error("Could not read image"));
-    reader.readAsDataURL(file);
-  });
-
-  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Could not load image"));
-    img.src = dataUrl;
-  });
-
-  const maxSide = 1280;
-  const ratio = Math.min(1, maxSide / Math.max(image.width || 1, image.height || 1));
-  const width = Math.max(1, Math.round(image.width * ratio));
-  const height = Math.max(1, Math.round(image.height * ratio));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return dataUrl;
-  ctx.drawImage(image, 0, 0, width, height);
-  return canvas.toDataURL("image/jpeg", 0.84);
-}
-
 export default function ContactBubble() {
-  const [chatOpen, setChatOpen] = useState(false);
   const [socialOpen, setSocialOpen] = useState(false);
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [showStarters, setShowStarters] = useState(true);
-  const [draftImageUrl, setDraftImageUrl] = useState<string | null>(null);
-  const [uploadingImage, setUploadingImage] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const pathname = usePathname();
-  const { user } = useAuth();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  const mode = useMemo(() => detectMode(pathname, user?.role), [pathname, user?.role]);
-  const meta = useMemo(() => modeMeta(mode), [mode]);
-
-  useEffect(() => {
-    setMessages([{ role: "assistant", content: meta.intro }]);
-    setInput("");
-    setDraftImageUrl(null);
-    setShowStarters(true);
-  }, [meta.intro]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, chatOpen, sending]);
-
-  const hasConversationStarted = messages.some((message) => message.role === "user");
-  const showDirectContactLinks = !SOCIAL_BUBBLES_ENABLED && mode === "customer" && !hasConversationStarted && showStarters && !draftImageUrl;
-
-  const panelWidth = mode === "customer"
-    ? (showStarters ? "w-[min(calc(100vw-1rem),24rem)]" : "w-[min(calc(100vw-1rem),28rem)]")
-    : (showStarters ? "w-[min(calc(100vw-1rem),26rem)]" : "w-[min(calc(100vw-1rem),32rem)]");
-
-  const messageAreaClassName = hasConversationStarted
-    ? "max-h-[60vh] min-h-[18rem]"
-    : "max-h-[52vh]";
-
-  const sendMessage = async (text?: string) => {
-    const raw = String(text ?? input).trim();
-    const content = raw || (draftImageUrl ? defaultImagePrompt(mode) : "");
-    if ((!content && !draftImageUrl) || sending) return;
-
-    const imageUrl = draftImageUrl;
-    const nextMessages: Message[] = [...messages, { role: "user", content, imageUrl }];
-    setMessages(nextMessages);
-    setInput("");
-    setDraftImageUrl(null);
-    setShowStarters(false);
-    setSending(true);
-
-    try {
-      const token = typeof window !== "undefined" ? localStorage.getItem("token") : "";
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (token) headers.Authorization = `Bearer ${token}`;
-
-      const payload = JSON.stringify({
-        messages: nextMessages.map(({ role, content: bodyContent }) => ({ role, content: bodyContent })),
-        page: pathname || "/",
-        imageDataUrl: imageUrl,
-        responseLanguage: responseLanguageFor(content),
-      });
-
-      let data: any = null;
-      let lastError = "";
-      for (const endpoint of chatbotEndpointCandidates()) {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers,
-          body: payload,
-        });
-        data = await res.json().catch(() => null);
-        if (res.ok && data?.answer) break;
-        lastError = String(data?.error || `HTTP ${res.status}`);
-      }
-
-      const answer = String(data?.answer || lastError || "Sorry, I could not answer that just now.").trim();
-      setMessages((current) => [...current, { role: "assistant", content: answer }]);
-    } catch {
-      setMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content:
-            "Sorry, the assistant is unavailable right now. Please refresh the page or use the direct contact buttons if you need an immediate answer.",
-        },
-      ]);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handlePickImage = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      event.target.value = "";
-      return;
-    }
-    setUploadingImage(true);
-    try {
-      const compressed = await resizeImageToDataUrl(file);
-      setDraftImageUrl(compressed);
-      setChatOpen(true);
-      setShowStarters(false);
-    } finally {
-      setUploadingImage(false);
-      event.target.value = "";
-    }
-  };
-
-  if (!CHATBOT_ENABLED && !SOCIAL_BUBBLES_ENABLED) return null;
+  if (!SOCIAL_BUBBLES_ENABLED) return null;
 
   return (
-    <div className="fixed bottom-3 right-3 z-[70] flex flex-col items-end gap-3 sm:bottom-5 sm:right-5">
-      {SOCIAL_BUBBLES_ENABLED && socialOpen && (
-        <div className="w-[min(calc(100vw-1rem),22rem)] overflow-hidden rounded-[1.75rem] border border-pink-100 bg-white p-3 shadow-2xl shadow-pink-200/40">
-          <div className="mb-2 flex items-center justify-between px-1">
-            <div>
-              <p className="text-sm font-black text-gray-900">Contact The Nail Lounge</p>
-              <p className="mt-1 text-xs text-gray-500">Choose a direct social channel.</p>
-            </div>
-            <button onClick={() => setSocialOpen(false)} className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-gray-100 bg-gray-50 text-gray-500">×</button>
-          </div>
-          <div className="grid gap-2">
-            {contactLinks.map((item) => {
-              const Icon = item.icon;
-              return (
-                <a key={item.label} href={item.href} target="_blank" rel="noopener noreferrer" className="group flex items-center gap-3 rounded-2xl border border-gray-100 bg-white p-3 text-left shadow-sm">
-                  <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white shadow-lg ${item.className}`}>
-                    <Icon />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-gray-900">{item.label}</span>
-                    <span className="block text-xs text-gray-500">{item.helper}</span>
-                  </span>
-                  <span className="text-pink-400 transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
-                </a>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {CHATBOT_ENABLED && chatOpen && (
-        <div className={`${panelWidth} overflow-hidden rounded-[2rem] border border-pink-100 bg-white shadow-2xl shadow-pink-200/40`}>
-          <div className="bg-gradient-to-r from-pink-50 via-white to-rose-50 px-4 py-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-black text-gray-900">{meta.title}</p>
-                <p className="mt-1 text-xs leading-5 text-gray-500">{meta.subtitle}</p>
-              </div>
-              <button onClick={() => setChatOpen(false)} className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/80 bg-white text-gray-500 shadow-sm">×</button>
-            </div>
-            {showStarters && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {meta.starters.map((item) => (
-                  <button key={item} onClick={() => sendMessage(item)} disabled={sending} className="rounded-full border border-pink-200 bg-white px-3 py-2 text-[11px] font-bold text-pink-700 disabled:opacity-50">
-                    {item}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className={`${messageAreaClassName} space-y-3 overflow-y-auto bg-[#fffafc] px-4 py-4`}>
-            {messages.map((message, index) => (
-              <div key={`${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[88%] rounded-[1.4rem] px-4 py-3 text-sm leading-6 shadow-sm ${
-                    message.role === "user"
-                      ? "bg-gray-900 text-white"
-                      : "border border-pink-100 bg-white text-gray-700"
-                  }`}
-                >
-                  {message.imageUrl && (
-                    <img src={message.imageUrl} alt="Uploaded reference" className="mb-3 max-h-48 w-full rounded-2xl object-cover" />
-                  )}
-                  <div className="whitespace-pre-wrap">{message.content}</div>
-                </div>
-              </div>
-            ))}
-            {sending && (
-              <div className="flex justify-start">
-                <div className="rounded-[1.4rem] border border-pink-100 bg-white px-4 py-3 text-sm text-gray-500 shadow-sm">Typing…</div>
-              </div>
-            )}
-            <div ref={bottomRef} />
-          </div>
-
-          <div className="border-t border-pink-100 bg-white p-3">
-            {draftImageUrl && (
-              <div className="mb-3 rounded-2xl border border-pink-100 bg-pink-50 p-3">
-                <div className="flex items-start gap-3">
-                  <img src={draftImageUrl} alt="Draft upload" className="h-16 w-16 rounded-2xl object-cover" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-black uppercase tracking-wide text-pink-700">Image attached</p>
-                    <p className="mt-1 text-xs leading-5 text-gray-600">Ask what the salon may be able to do, and the assistant will give a cautious, non-medical opinion.</p>
-                  </div>
-                  <button onClick={() => setDraftImageUrl(null)} className="rounded-xl border border-pink-200 bg-white px-3 py-2 text-xs font-bold text-pink-700">Remove</button>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-end gap-2">
-              {meta.allowImage && (
-                <>
-                  <input ref={fileInputRef} type="file" accept="image/*" onChange={handlePickImage} className="hidden" />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploadingImage || sending}
-                    className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-gray-200 bg-white text-gray-600 disabled:opacity-50"
-                    title="Upload image"
-                  >
-                    {uploadingImage ? "…" : <PhotoIcon />}
-                  </button>
-                </>
-              )}
-              <textarea
-                rows={1}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendMessage();
-                  }
-                }}
-                placeholder={meta.placeholder}
-                className="min-h-12 flex-1 resize-none rounded-2xl border border-gray-200 px-4 py-3 text-sm text-gray-800 outline-none focus:border-pink-300 focus:ring-4 focus:ring-pink-50"
-              />
-              <button
-                onClick={() => sendMessage()}
-                disabled={sending || (!input.trim() && !draftImageUrl)}
-                className="inline-flex h-12 shrink-0 items-center justify-center rounded-2xl bg-pink-600 px-4 text-sm font-black text-white disabled:opacity-50"
+    <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-3 font-sans">
+      {socialOpen && (
+        <div className="flex flex-col gap-2 mb-2 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          {contactLinks.map((item) => {
+            const Icon = item.icon;
+            return (
+              <a
+                key={item.label}
+                href={item.href}
+                target="_blank"
+                rel="noreferrer"
+                className={`flex items-center gap-3 px-4 py-2.5 rounded-full text-white text-sm font-semibold shadow-lg transition-transform hover:scale-105 ${item.className}`}
               >
-                {meta.sendLabel}
-              </button>
-            </div>
-
-            {showDirectContactLinks ? (
-              <div className="mt-3 grid gap-2">
-                {contactLinks.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <a
-                      key={item.label}
-                      href={item.href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="group flex items-center gap-3 rounded-2xl border border-gray-100 bg-white p-3 text-left shadow-sm"
-                    >
-                      <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white shadow-lg ${item.className}`}>
-                        <Icon />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-gray-900">{item.label}</span>
-                        <span className="block text-xs text-gray-500">{item.helper}</span>
-                      </span>
-                      <span className="text-pink-400 transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
-                    </a>
-                  );
-                })}
-              </div>
-            ) : mode !== "customer" ? (
-              <div className="mt-3 rounded-2xl border border-gray-100 bg-gray-50 px-3 py-2 text-xs leading-5 text-gray-500">
-                Live role-aware mode uses signed-in account permissions and live database context. Admin/Manager can ask management questions; customer-facing users only receive salon guidance.
-              </div>
-            ) : null}
-          </div>
+                <Icon />
+                <span>{item.label}</span>
+              </a>
+            );
+          })}
         </div>
       )}
 
-      <div className="flex flex-col items-end gap-3">
-        {SOCIAL_BUBBLES_ENABLED && (
-          <button
-            type="button"
-            onClick={() => {
-              setSocialOpen((value) => !value);
-              if (!socialOpen) setChatOpen(false);
-            }}
-            className="group relative flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-sky-500 text-white shadow-2xl shadow-sky-300/50 transition-all hover:scale-105 focus:outline-none focus:ring-4 focus:ring-sky-200"
-            aria-label={socialOpen ? "Close social contact links" : "Open social contact links"}
-            aria-expanded={socialOpen}
-          >
-            <span className="relative flex h-14 w-14 items-center justify-center rounded-full">{socialOpen ? <CloseIcon /> : <MessengerIcon />}</span>
-            {!socialOpen && (
-              <span className="absolute right-[4rem] hidden whitespace-nowrap rounded-full bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white shadow-lg sm:block">
-                Social links
-              </span>
-            )}
-          </button>
+      <button
+        type="button"
+        onClick={() => setSocialOpen((val) => !val)}
+        className="group relative flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-sky-500 text-white shadow-2xl shadow-sky-300/50 transition-all hover:scale-105 focus:outline-none focus:ring-4 focus:ring-sky-200"
+        aria-label={socialOpen ? "Close social contact links" : "Open social contact links"}
+        aria-expanded={socialOpen}
+      >
+        <span className="relative flex h-14 w-14 items-center justify-center rounded-full">
+          {socialOpen ? <CloseIcon /> : <MessengerIcon />}
+        </span>
+        {!socialOpen && (
+          <span className="absolute right-[4rem] hidden whitespace-nowrap rounded-full bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white shadow-lg sm:block">
+            Social links
+          </span>
         )}
-
-        {CHATBOT_ENABLED && (
-          <button
-            type="button"
-            onClick={() => {
-              setChatOpen((value) => !value);
-              if (!chatOpen) setSocialOpen(false);
-            }}
-            className="group relative flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-pink-500 to-rose-500 text-white shadow-2xl shadow-rose-300/60 transition-all hover:scale-105 focus:outline-none focus:ring-4 focus:ring-pink-200"
-            aria-label={chatOpen ? "Close chat assistant" : "Open chat assistant"}
-            aria-expanded={chatOpen}
-          >
-            <span className="absolute inset-0 rounded-full bg-rose-400/40 animate-ping" />
-            <span className="relative flex h-16 w-16 items-center justify-center rounded-full">{chatOpen ? <CloseIcon /> : <ChatIcon />}</span>
-            {!chatOpen && (
-              <span className="absolute right-[4.5rem] hidden whitespace-nowrap rounded-full bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white shadow-lg sm:block">
-                {meta.launchLabel}
-              </span>
-            )}
-          </button>
-        )}
-      </div>
+      </button>
     </div>
-  );
-}
-
-function ChatIcon() {
-  return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M20 11.6c0 4.2-3.6 7.6-8 7.6-1.1 0-2.2-.2-3.2-.6L4 20l1.5-4.1A7.2 7.2 0 0 1 4 11.6C4 7.4 7.6 4 12 4s8 3.4 8 7.6Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-    </svg>
   );
 }
 
@@ -490,16 +88,6 @@ function CloseIcon() {
   return (
     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function PhotoIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5v-9Z" stroke="currentColor" strokeWidth="1.8" />
-      <path d="m8 15 2.4-2.7a1 1 0 0 1 1.49-.02L14 14.5l1.2-1.34a1 1 0 0 1 1.48-.04L19 15.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="9" cy="9" r="1.2" fill="currentColor" />
     </svg>
   );
 }
