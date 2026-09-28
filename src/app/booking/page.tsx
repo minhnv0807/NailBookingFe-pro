@@ -2,854 +2,316 @@
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
-import { useState, useEffect } from "react";
+
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import {
-  ChevronLeft, ChevronRight, Clock, CalendarDays, User, Phone, Mail, MessageSquare,
-  Check, Sparkles, Upload, Tag, ShieldCheck, Heart, Stethoscope, ImagePlus,
-  X, Star, AlertCircle, Users
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Sparkles, Check } from "lucide-react";
 import Link from "next/link";
-import { api } from "@/lib/api";
-import { fallbackServices, formatDuration, formatPrice, normalizeServices, type PublicService } from "@/lib/service-utils";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
-import { useAuth } from "@/context/AuthContext";
 import { useLanguage } from "@/context/LanguageContext";
 import { t } from "@/lib/translations";
+import { useShopCatalogue } from "@/lib/vitech/useShopCatalogue";
+import { vitech } from "@/lib/vitech/env";
+import {
+  mergeSlotOffers,
+  todayIn,
+  type SlotOffer,
+} from "@/lib/vitech/booking";
+import type { VitechSlot } from "@/lib/vitech/client";
+import ServiceStep from "@/components/booking/ServiceStep";
+import DateStep from "@/components/booking/DateStep";
+import TimeStep from "@/components/booking/TimeStep";
+import DetailsStep from "@/components/booking/DetailsStep";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
-function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
-
-const timeSlots = [
-  "09:00", "09:30", "10:00", "10:30", "11:00", "11:30",
-  "12:00", "12:30", "13:00", "13:30", "14:00", "14:30",
-  "15:00", "15:30", "16:00", "16:30", "17:00", "17:30",
-];
-
-function isEmailAddress(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
 }
-
-function bookingReference(id?: string) {
-  return id ? `NL-${id.slice(-8).toUpperCase()}` : "NL-PENDING";
-}
-
-type Staff = { id: string; name: string; email: string; role: string; active: boolean; avatar?: string | null; ratingAverage?: number | null; ratingCount?: number };
-type Slot = { time: string; availableStaffCount: number; staffIds: string[] };
 
 export default function BookingPage() {
-  const { user, loading: authLoading } = useAuth();
   const { lang } = useLanguage();
-  const [step, setStep] = useState(1);
-  const [selectedServices, setSelectedServices] = useState<string[]>([]);
-  const [selectedAddons, setSelectedAddons] = useState<string[]>([]);
-  const [selectedDate, setSelectedDate] = useState("");
-  const [selectedTime, setSelectedTime] = useState("");
-  const [formData, setFormData] = useState({
-    name: "", phone: "", email: "", emailConfirm: "", notes: "",
-    promoCode: "", healthConfirmed: false, allergiesConfirmed: false, termsAccepted: false,
-  });
-  const [selectedStaff, setSelectedStaff] = useState("any");
-  const [numPeople, setNumPeople] = useState(1);
-  const [staffList, setStaffList] = useState<Staff[]>([]);
-  const [availableSlots, setAvailableSlots] = useState<Slot[]>([]);
-  const [slotsLoading, setSlotsLoading] = useState(false);
-  const [slotsError, setSlotsError] = useState("");
-  const [services, setServices] = useState<PublicService[]>(fallbackServices());
-  const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const [discount, setDiscount] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const [createdBooking, setCreatedBooking] = useState<any | null>(null);
-  const [verificationInfo, setVerificationInfo] = useState<any | null>(null);
-  const [bookingResult, setBookingResult] = useState<any | null>(null);
-  const [promoError, setPromoError] = useState("");
-  const [phoneVerified, setPhoneVerified] = useState(false);
-  const [otpLoading, setOtpLoading] = useState(false);
-  const [phoneToVerify, setPhoneToVerify] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
-  const [otpCode, setOtpCode] = useState("");
-  const [otpChannel, setOtpChannel] = useState<"auto" | "whatsapp" | "sms">("auto");
-  const [otpError, setOtpError] = useState("");
-  const [sendingOtp, setSendingOtp] = useState(false);
-  const [verifyingOtp, setVerifyingOtp] = useState(false);
-  const [otpMessage, setOtpMessage] = useState("");
-  const [bookingError, setBookingError] = useState<{ title: string; message: string } | null>(null);
+  const catalogue = useShopCatalogue();
 
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [serviceId, setServiceId] = useState<string>("");
+  const [date, setDate] = useState<string>("");
+  const [technicianChoice, setTechnicianChoice] = useState<"any" | string>("any");
+  const [offers, setOffers] = useState<SlotOffer[]>([]);
+  const [slotsStatus, setSlotsStatus] = useState<"idle" | "loading" | "ready" | "failed">("idle");
+  const [time, setTime] = useState<string>("");
+  const [slotNotice, setSlotNotice] = useState<string>("");
+
+  const minDate = todayIn(catalogue.timezone || "Europe/London");
+  const requestSeq = useRef(0);
+
+  // Initialize service from localStorage or default
   useEffect(() => {
-    api.staff.list().then((d: any) => setStaffList(d.staff || [])).catch(() => {});
-    api.services.list().then((d: any) => {
-      const live = normalizeServices(d.services || []);
-      if (live.length) {
-        setServices(live);
-        const saved = typeof window !== "undefined" ? localStorage.getItem("selectedService") : "";
-        if (saved) {
-          const match = live.find((s) => s.id === saved || s.name === saved);
-          if (match) setSelectedServices([match.id]);
+    if (catalogue.status !== "ready" || catalogue.services.length === 0) return;
+    if (serviceId) return;
+
+    const saved = typeof window !== "undefined" ? localStorage.getItem("selectedService") : "";
+    if (saved) {
+      const match = catalogue.services.find((s) => s.id === saved || s.name === saved);
+      if (match) {
+        queueMicrotask(() => {
+          setServiceId(match.id);
+        });
+      }
+    }
+  }, [catalogue.status, catalogue.services, serviceId]);
+
+  // Default date to today in salon timezone if not set
+  useEffect(() => {
+    if (!date && minDate) {
+      queueMicrotask(() => {
+        setDate(minDate);
+      });
+    }
+  }, [date, minDate]);
+
+  // Load slots when on step 3 or whenever serviceId, date, technicianChoice change
+  useEffect(() => {
+    if (step < 3 || !serviceId || !date) {
+      return;
+    }
+
+    const currentSeq = ++requestSeq.current;
+
+    async function loadSlots() {
+      setSlotsStatus("loading");
+      setSlotNotice("");
+
+      const techsToQuery =
+        technicianChoice === "any"
+          ? catalogue.technicians
+          : catalogue.technicians.filter((t) => t.id === technicianChoice);
+
+      if (techsToQuery.length === 0) {
+        if (requestSeq.current === currentSeq) {
+          setOffers([]);
+          setSlotsStatus("ready");
+        }
+        return;
+      }
+
+      if (technicianChoice === "any") {
+        const results = await Promise.allSettled(
+          techsToQuery.map(async (st) => {
+            const res = await vitech.getAvailability({
+              serviceId,
+              date,
+              technicianId: st.id,
+            });
+            return { technicianId: st.id, slots: res.available_slots };
+          })
+        );
+
+        if (requestSeq.current !== currentSeq) return;
+
+        const fulfilled = results
+          .filter(
+            (
+              r
+            ): r is PromiseFulfilledResult<{
+              technicianId: string;
+              slots: VitechSlot[];
+            }> => r.status === "fulfilled"
+          )
+          .map((r) => r.value);
+
+        if (fulfilled.length === 0) {
+          setOffers([]);
+          setSlotsStatus("failed");
+          return;
+        }
+
+        const merged = mergeSlotOffers(fulfilled);
+        setOffers(merged);
+        setSlotsStatus("ready");
+      } else {
+        try {
+          const res = await vitech.getAvailability({
+            serviceId,
+            date,
+            technicianId: technicianChoice,
+          });
+
+          if (requestSeq.current !== currentSeq) return;
+
+          const merged = mergeSlotOffers([
+            { technicianId: technicianChoice, slots: res.available_slots },
+          ]);
+          setOffers(merged);
+          setSlotsStatus("ready");
+        } catch {
+          if (requestSeq.current !== currentSeq) return;
+          setOffers([]);
+          setSlotsStatus("failed");
         }
       }
-    }).catch(() => {
-      const saved = typeof window !== "undefined" ? localStorage.getItem("selectedService") : "";
-      if (saved) {
-        const match = services.find((s) => s.id === saved || s.name === saved);
-        if (match) setSelectedServices([match.id]);
-      }
-    });
-  }, []);
-
-  useEffect(() => {
-    if (authLoading || !user) return;
-    setFormData((current) => ({
-      ...current,
-      name: current.name || user.name || "",
-      phone: current.phone || user.phone || "",
-      email: user.email || current.email,
-      emailConfirm: current.emailConfirm,
-    }));
-  }, [authLoading, user?.id, user?.email, user?.name, user?.phone]);
-
-  const primaryServiceOptions = services.filter((s) => s.category !== "extras");
-  const addonServiceOptions = services.filter((s) => s.category === "extras");
-  const selectedServiceObjects = services.filter((s) => selectedServices.includes(s.id) || selectedServices.includes(s.name));
-  const selectedAddonObjects = services.filter((s) => selectedAddons.includes(s.id) || selectedAddons.includes(s.name));
-  const allSelectedServiceObjects = [...selectedServiceObjects, ...selectedAddonObjects].filter((service, index, array) =>
-    index === array.findIndex((item) => item.id === service.id)
-  );
-  const selectedServiceIdsForBooking = allSelectedServiceObjects.map((s) => s.id);
-  const selectedServiceKey = selectedServiceIdsForBooking.join("|");
-  const totalDuration = allSelectedServiceObjects.reduce((sum, s) => sum + Number(s.duration || 0), 0);
-  const perPersonPrice = allSelectedServiceObjects.reduce((sum, s) => sum + Number(s.price || 0), 0);
-  const subtotalPrice = Math.round(perPersonPrice * numPeople * 100) / 100;
-  const finalPrice = Math.max(0, subtotalPrice - discount);
-  const accountEmail = (user?.email || "").trim().toLowerCase();
-  const bookingEmail = formData.email.trim().toLowerCase();
-  const confirmEmail = formData.emailConfirm.trim().toLowerCase();
-  const accountUsesEmail = isEmailAddress(accountEmail);
-  const emailValid = accountUsesEmail ? isEmailAddress(formData.email) : Boolean(formData.email.trim());
-  const emailMatchesAccount = Boolean(user && accountEmail && bookingEmail === accountEmail);
-  const emailConfirmMatchesAccount = Boolean(user && accountEmail && confirmEmail === accountEmail);
-
-  useEffect(() => {
-    setSelectedTime("");
-    setNumPeople(1);
-    setSlotsError("");
-    setAvailableSlots([]);
-    if (!selectedDate || !selectedServiceIdsForBooking.length) return;
-
-    setSlotsLoading(true);
-    api.availability.slots(selectedDate, selectedServiceIdsForBooking, selectedStaff)
-      .then((d: any) => {
-        setAvailableSlots(d.slots || []);
-        if (!(d.slots || []).length) setSlotsError("No staff is free for this date. Please choose another date or staff.");
-      })
-      .catch((err: any) => {
-        setAvailableSlots([]);
-        setSlotsError(err.message || "Could not load available slots");
-      })
-      .finally(() => setSlotsLoading(false));
-  }, [selectedDate, selectedStaff, selectedServiceKey]);
-
-  const selectedSlot = availableSlots.find((slot) => slot.time === selectedTime);
-  const selectedSlotCapacity = Math.max(1, Number(selectedSlot?.availableStaffCount || 1));
-
-  useEffect(() => {
-    if (!selectedTime) return;
-    setNumPeople((current) => Math.min(Math.max(1, current), selectedSlotCapacity));
-  }, [selectedTime, selectedSlotCapacity]);
-
-  const handleNext = () => { if (step < 4) setStep(step + 1); };
-  const handleBack = () => { if (step > 1) setStep(step - 1); };
-
-  const showBookingError = (title: string, message: string) => {
-    setBookingError({ title, message });
-  };
-
-  const sendOTPForBooking = async () => {
-    const phone = formData.phone.trim();
-    if (!phone) { showBookingError("Phone number required", "Enter your phone number first so we can send the OTP code."); return; }
-    setOtpLoading(true); setOtpError("");
-    try {
-      await api.otp.send(phone, otpChannel);
-      setOtpSent(true);
-      setPhoneToVerify(phone);
-    } catch (e: any) {
-      setOtpError(e.message || "Failed to send OTP");
-    } finally { setOtpLoading(false); }
-  };
-
-  const verifyOTPForBooking = async () => {
-    if (!otpCode || otpCode.length < 4) return;
-    setOtpLoading(true); setOtpError("");
-    try {
-      const res = await api.otp.verify(phoneToVerify || formData.phone, otpCode);
-      if (res.success) {
-        setPhoneVerified(true);
-        setOtpError("");
-      } else {
-        setOtpError("Invalid code");
-      }
-    } catch (e: any) {
-      setOtpError(e.message || "Verification failed");
-    } finally { setOtpLoading(false); }
-  };
-
-  const applyPromo = async () => {
-    const code = formData.promoCode.trim().toUpperCase();
-    if (!code) return;
-    try {
-      const result = await api.promoCodes.validate(code, subtotalPrice);
-      setDiscount(Number(result.discount || 0));
-      setPromoError("");
-    } catch (err: any) {
-      setDiscount(0);
-      setPromoError(err.message || "Invalid promotion code");
     }
-  };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onloadend = () => setUploadedImage(reader.result as string);
-    reader.readAsDataURL(file);
-  };
+    loadSlots();
+  }, [step, serviceId, date, technicianChoice, catalogue.technicians]);
 
-  const removeImage = () => setUploadedImage(null);
+  const selectedService = catalogue.services.find((s) => s.id === serviceId) || null;
+  const selectedOffer = offers.find((o) => o.time === time) || null;
 
-  const handleSubmit = async () => {
-    if (!user) {
-      showBookingError("Sign in required", "Please sign in before booking online.");
-      window.location.href = "/login?next=/booking";
-      return;
+  function handleSelectService(s: { id: string; name: string }) {
+    setServiceId(s.id);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("selectedService", s.id);
     }
-    if (!emailMatchesAccount || !emailConfirmMatchesAccount || !emailValid) {
-      showBookingError(
-        "Account check required",
-        accountUsesEmail ? "The booking email and confirmation email must both match your signed-in account email." : "The booking account and confirmation account must both match your signed-in account."
-      );
-      return;
-    }
-    if (!formData.healthConfirmed || !formData.allergiesConfirmed || !formData.termsAccepted) {
-      showBookingError("Confirmations required", "Please tick all health, allergy, and terms confirmations before submitting.");
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await api.bookings.create({
-        customerName: formData.name,
-        customerPhone: formData.phone,
-        customerEmail: user?.email || formData.email,
-        date: selectedDate,
-        time: selectedTime,
-        serviceIds: selectedServiceIdsForBooking,
-        numPeople,
-        staffId: selectedStaff === "any" ? null : selectedStaff,
-        notes: formData.notes,
-        promoCode: formData.promoCode || null,
-        discount: discount > 0 ? discount : null,
-        imageBase64: uploadedImage,
-        healthConfirmed: formData.healthConfirmed,
-        allergiesConfirmed: formData.allergiesConfirmed,
-        termsAccepted: formData.termsAccepted,
-      });
-      setCreatedBooking(result.booking || null);
-      setVerificationInfo(result.verification || null);
-      setBookingResult(result || null);
-      setSubmitted(true);
-    } catch (e: any) {
-      const message = e.message || "Booking failed";
-      showBookingError(
-        message.toLowerCase().includes("booking limit") ? "Booking limit reached" : "Booking could not be submitted",
-        message
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const canProceed =
-    (step === 1 && selectedServices.length > 0) ||
-    (step === 2 && selectedDate) ||
-    (step === 3 && selectedTime && numPeople <= selectedSlotCapacity) ||
-    step === 4;
-
-  const step4Valid = Boolean(user && formData.name && formData.phone && emailValid && emailMatchesAccount && emailConfirmMatchesAccount && formData.healthConfirmed && formData.allergiesConfirmed && formData.termsAccepted && phoneVerified);
-  const submitRequirements = [
-    !phoneVerified ? "verify phone OTP" : "",
-    !formData.name ? "enter full name" : "",
-    !formData.phone ? "enter phone number" : "",
-    !emailValid || !emailMatchesAccount || !emailConfirmMatchesAccount ? (accountUsesEmail ? "re-type the signed-in email exactly" : "re-type the signed-in account exactly") : "",
-    !formData.healthConfirmed ? "tick health confirmation" : "",
-    !formData.allergiesConfirmed ? "tick allergy confirmation" : "",
-    !formData.termsAccepted ? "accept terms and privacy consent" : "",
-  ].filter(Boolean);
-
-  if (!authLoading && !user) {
-    return (
-      <>
-        <Navbar />
-        <main className="pt-20 min-h-screen bg-gradient-to-b from-pink-50/30 to-white flex items-center justify-center px-4">
-          <div className="max-w-lg w-full bg-white rounded-3xl border border-pink-100 shadow-xl shadow-pink-100/50 p-8 text-center">
-            <ShieldCheck size={42} className="mx-auto text-pink-600 mb-4" />
-            <h1 className="text-2xl font-black text-gray-900 mb-2">{t("booking.signInRequired", lang)}</h1>
-            <p className="text-sm text-gray-500 mb-6">{t("booking.signInDesc", lang)}</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Link href="/login?next=/booking" className="btn-primary">{t("booking.signIn", lang)}</Link>
-              <Link href="/register" className="btn-secondary">{t("booking.register", lang)}</Link>
-            </div>
-          </div>
-        </main>
-        <Footer />
-      </>
-    );
   }
 
-  if (submitted) {
-    const reference = verificationInfo?.reference || bookingReference(createdBooking?.id);
-    const depositRequired = verificationInfo?.status === "DEPOSIT_REQUIRED";
-    const emailSent = Number(bookingResult?.notificationDelivery?.email?.sent || 0) > 0;
-    const emailProblem = bookingResult?.notificationDelivery?.email?.error || bookingResult?.notificationDelivery?.email?.status;
-    const whatsappSent = Number(bookingResult?.notificationDelivery?.whatsapp?.sent || 0) > 0;
-    const whatsappProblem = bookingResult?.notificationDelivery?.whatsapp?.error || bookingResult?.notificationDelivery?.whatsapp?.status;
-    const deliveredChannels = [
-      emailSent ? `email ${formData.email}` : null,
-      whatsappSent ? `WhatsApp ${formData.phone}` : null,
-    ].filter(Boolean) as string[];
-    const deliverySummary = deliveredChannels.length > 1
-      ? `${deliveredChannels.slice(0, -1).join(", ")} and ${deliveredChannels[deliveredChannels.length - 1]}`
-      : deliveredChannels[0] || "";
-    return (
-      <>
-        <Navbar />
-        <main className="pt-16 min-h-screen bg-gradient-to-b from-pink-50/30 to-white flex items-center justify-center">
-          <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="max-w-2xl mx-auto px-4 sm:px-6 py-10">
-            <div className="bg-white rounded-3xl border border-pink-100 shadow-xl shadow-pink-100/60 p-5 sm:p-8 text-center">
-              <div className="w-20 h-20 rounded-full bg-gradient-to-br from-pink-400 to-rose-500 flex items-center justify-center text-white mx-auto mb-5 shadow-lg shadow-pink-200">
-                <Mail size={38} />
-              </div>
-              <h1 className="text-3xl font-black text-gray-900 mb-3">Booking Request Saved</h1>
-              <p className="text-gray-600 mb-2 break-words">Thank you, <span className="font-bold text-gray-900">{formData.name}</span>. Your booking request has been received.</p>
-              {depositRequired ? (
-                deliveredChannels.length ? (
-                  <div className="mb-5 rounded-2xl border border-orange-200 bg-orange-50 p-4 text-left text-sm text-orange-800">
-                    <p className="font-black break-words">Anti-spam protection requires a deposit for this booking. We sent the secure deposit link to <span className="underline decoration-orange-200">{deliverySummary}</span>. Use reference {reference}; staff assignment happens after the shop confirms the deposit.</p>
-                    {emailSent || whatsappSent ? <p className="mt-2 text-xs break-words opacity-80">Delivery status: Email {emailSent ? "sent" : "not sent yet"} · WhatsApp {whatsappSent ? "sent" : "not sent yet"}</p> : null}
-                    {!emailSent && emailProblem ? <p className="mt-1 text-xs break-words opacity-80">Email status: {String(emailProblem)}</p> : null}
-                    {!whatsappSent && whatsappProblem ? <p className="mt-1 text-xs break-words opacity-80">WhatsApp status: {String(whatsappProblem)}</p> : null}
-                  </div>
-                ) : (
-                  <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-left text-sm text-amber-800">
-                    <p className="font-black">Deposit link notifications have not been sent yet.</p>
-                    <p className="mt-1 break-words">Your booking is saved in Admin as <span className="font-bold">Deposit required</span>. The shop can still see it and send/confirm the deposit manually.</p>
-                    {emailProblem ? <p className="mt-2 text-xs break-words opacity-80">Mail status: {String(emailProblem)}</p> : null}
-                    {whatsappProblem ? <p className="mt-1 text-xs break-words opacity-80">WhatsApp status: {String(whatsappProblem)}</p> : null}
-                  </div>
-                )
-              ) : (
-                <p className="text-sm text-sky-600 font-bold mb-5 break-words">Your request has been sent to the staff portal. A staff member will accept it if they can take this slot; you will receive the next booking update by email and WhatsApp when available.</p>
-              )}
+  function handleTechnicianChange(choice: "any" | string) {
+    setTechnicianChoice(choice);
+    setTime("");
+  }
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
-                <div className="rounded-2xl bg-gray-50 p-4">
-                  <p className="text-xs uppercase tracking-wide text-gray-400 font-black">Booking reference</p>
-                  <p className="text-2xl font-black text-gray-900 tracking-wide">{reference}</p>
-                </div>
-                <div className="rounded-2xl bg-gray-50 p-4">
-                  <p className="text-xs uppercase tracking-wide text-gray-400 font-black">Current status</p>
-                  <p className={cn("text-sm font-black", depositRequired ? "text-orange-600" : "text-sky-600")}>{depositRequired ? "Deposit required" : "Waiting for staff acceptance"}</p>
-                </div>
-                <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 space-y-1 sm:col-span-2">
-                  <p><span className="font-bold">Date:</span> {selectedDate} at {selectedTime}</p>
-                  <p><span className="font-bold">Services:</span> {allSelectedServiceObjects.map(s => s.name).join(", ") || "Selected service(s)"}</p>
-                  <p><span className="font-bold">People:</span> {numPeople}</p>
-                  <p><span className="font-bold">Email:</span> {formData.email}</p>
-                  <p><span className="font-bold">Phone:</span> {formData.phone}</p>
-                </div>
-                <div className="rounded-2xl bg-gray-50 p-4 text-sm text-gray-700 space-y-1 sm:col-span-2">
-                  <p className="text-xs uppercase tracking-wide text-gray-400 font-black">Notification delivery</p>
-                  <p><span className="font-bold">Email:</span> {emailSent ? "Sent" : emailProblem ? `Not sent (${String(emailProblem)})` : "Pending"}</p>
-                  <p><span className="font-bold">WhatsApp:</span> {whatsappSent ? "Sent" : whatsappProblem ? `Not sent (${String(whatsappProblem)})` : "Pending"}</p>
-                </div>
-                <div className="rounded-2xl border border-pink-100 bg-white p-4 text-sm text-gray-700 space-y-2 sm:col-span-2">
-                  <div className="flex items-center justify-between border-b border-pink-50 pb-2">
-                    <p className="font-black text-gray-900">Invoice</p>
-                    <p className="text-xs font-bold text-pink-600">{reference}</p>
-                  </div>
-                  <p className="flex justify-between"><span>Services subtotal</span><span>{formatPrice(perPersonPrice)} × {numPeople}</span></p>
-                  <p className="flex justify-between"><span>Subtotal</span><span>{formatPrice(subtotalPrice)}</span></p>
-                  {discount > 0 && <p className="flex justify-between text-green-600"><span>Discount</span><span>-{formatPrice(discount)}</span></p>}
-                  <p className="flex justify-between text-base font-black text-gray-900 border-t border-pink-50 pt-2"><span>Total</span><span>{formatPrice(finalPrice)}</span></p>
-                </div>
-              </div>
+  function handleSelectTime(offer: SlotOffer) {
+    setTime(offer.time);
+  }
 
-              <div className={cn("mt-5 rounded-2xl border p-4 text-left text-sm flex gap-3", depositRequired ? "bg-orange-50 border-orange-100 text-orange-800" : "bg-sky-50 border-sky-100 text-sky-800")}>
-                <AlertCircle size={20} className="shrink-0 mt-0.5" />
-                <p>{depositRequired ? "This request is not assigned yet. Complete the deposit step first, then the shop/staff can confirm it." : "This request is not confirmed yet. Staff have been notified and can accept the booking from their portal."}</p>
-              </div>
-              <Link href="/" className="btn-primary inline-flex mt-6">Back to Home</Link>
-            </div>
-          </motion.div>
-        </main>
-        <Footer />
-      </>
-    );
+  const canProceed =
+    (step === 1 && Boolean(serviceId)) ||
+    (step === 2 && Boolean(date) && date >= minDate) ||
+    (step === 3 && Boolean(time));
+
+  function handleNext() {
+    if (!canProceed) return;
+    if (step < 4) {
+      setStep((prev) => (prev + 1) as 1 | 2 | 3 | 4);
+    }
+  }
+
+  function handleBack() {
+    if (step > 1) {
+      setStep((prev) => (prev - 1) as 1 | 2 | 3 | 4);
+    }
   }
 
   return (
     <>
-      {bookingError && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-gray-950/60 px-4 py-8 backdrop-blur-sm" role="alertdialog" aria-modal="true" aria-labelledby="booking-error-title">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.92, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="w-full max-w-xl rounded-[2rem] border-2 border-rose-200 bg-white p-6 sm:p-8 text-center shadow-2xl shadow-rose-950/30"
-          >
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-rose-100 text-rose-600">
-              <AlertCircle size={34} />
-            </div>
-            <h2 id="booking-error-title" className="text-2xl sm:text-3xl font-black text-gray-950">{bookingError.title}</h2>
-            <p className="mt-4 whitespace-pre-wrap break-words text-lg sm:text-xl font-bold leading-relaxed text-gray-700">{bookingError.message}</p>
-            {bookingError.message.toLowerCase().includes("booking limit") && (
-              <p className="mt-3 text-sm font-semibold text-gray-500">Please use a different verified phone number, wait until tomorrow, or contact the shop directly for help.</p>
-            )}
-            <button
-              type="button"
-              onClick={() => setBookingError(null)}
-              className="mt-7 w-full rounded-2xl bg-gradient-to-r from-pink-500 to-rose-500 px-6 py-4 text-base font-black text-white shadow-lg shadow-pink-200 transition hover:-translate-y-0.5 hover:shadow-xl"
-            >
-              I understand
-            </button>
-          </motion.div>
-        </div>
-      )}
       <Navbar />
-      <main className="pt-16 min-h-screen bg-gradient-to-b from-pink-50/30 to-white">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-12">
+      <main className="min-h-screen pt-28 pb-16 bg-gradient-to-b from-pink-50/40 via-white to-pink-50/20">
+        <div className="max-w-3xl mx-auto px-4 sm:px-6">
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+            {/* Header */}
             <div className="text-center mb-10">
               <div className="inline-flex items-center gap-2 px-4 py-2 bg-pink-50 rounded-full text-pink-600 text-sm font-semibold mb-4">
                 <Sparkles size={16} /> {t("booking.badge", lang)}
               </div>
-              <h1 className="text-3xl sm:text-4xl font-bold text-gradient mb-2">{t("booking.title", lang)}</h1>
+              <h1 className="text-3xl sm:text-4xl font-bold text-gradient mb-2">
+                {t("booking.title", lang)}
+              </h1>
               <p className="text-gray-500">{t("booking.subtitle", lang)}</p>
             </div>
 
-            {/* Progress */}
+            {/* Stepper Progress */}
             <div className="flex items-center justify-between mb-10 max-w-md mx-auto">
-              {[t("booking.step.service", lang), t("booking.step.date", lang), t("booking.step.time", lang), t("booking.step.details", lang)].map((label, i) => (
+              {[
+                t("booking.step.service", lang),
+                t("booking.step.date", lang),
+                t("booking.step.time", lang),
+                t("booking.step.details", lang),
+              ].map((label, i) => (
                 <div key={label} className="flex flex-col items-center">
-                  <div className={cn(
-                    "w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all",
-                    i + 1 <= step
-                      ? "bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-lg shadow-pink-200"
-                      : "bg-gray-100 text-gray-400"
-                  )}>
+                  <div
+                    className={cn(
+                      "w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold transition-all",
+                      i + 1 <= step
+                        ? "bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-lg shadow-pink-200"
+                        : "bg-gray-100 text-gray-400"
+                    )}
+                  >
                     {i + 1 < step ? <Check size={18} /> : i + 1}
                   </div>
-                  <span className={cn("text-xs mt-1.5 font-medium", i + 1 <= step ? "text-pink-600" : "text-gray-400")}>{label}</span>
+                  <span
+                    className={cn(
+                      "text-xs mt-1.5 font-medium",
+                      i + 1 <= step ? "text-pink-600" : "text-gray-400"
+                    )}
+                  >
+                    {label}
+                  </span>
                 </div>
               ))}
             </div>
 
-            {/* Steps */}
+            {/* Step Content */}
             <AnimatePresence mode="wait">
               {step === 1 && (
-                <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                  <h3 className="text-lg font-bold mb-2">{t("booking.selectService", lang)}</h3>
-                  <p className="text-sm text-gray-500 mb-5">{t("booking.selectServiceDesc", lang)}</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {primaryServiceOptions.map((s) => (
-                      <button
-                        key={s.id}
-                        onClick={() => { setSelectedServices(prev => prev.includes(s.id) ? prev.filter(id => id !== s.id) : [...prev, s.id]); }}
-                        className={cn(
-                          "text-left p-4 rounded-2xl border transition-all flex items-center gap-3",
-                          selectedServices.includes(s.id) || selectedServices.includes(s.name)
-                            ? "border-pink-400 bg-pink-50 shadow-md shadow-pink-100"
-                            : "border-gray-100 bg-white hover:border-pink-200 hover:shadow-sm"
-                        )}
-                      >
-                        <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-pink-100 to-rose-100 flex items-center justify-center text-pink-400 font-bold text-lg shrink-0 overflow-hidden">
-                          {s.image ? (
-                            <img src={s.image} alt={s.name} className="w-full h-full object-cover" />
-                          ) : (
-                            s.name.charAt(0)
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-gray-900 text-sm truncate">{s.name}</p>
-                          <div className="flex items-center gap-2 text-xs text-gray-400 mt-0.5">
-                            <Clock size={12} />{formatDuration(s.duration)}
-                          </div>
-                        </div>
-                        <div className="text-right shrink-0">
-                          <p className="font-bold text-pink-600 text-sm">{formatPrice(s.price)}</p>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                  {allSelectedServiceObjects.length > 0 && (
-                    <div className="mt-5 rounded-2xl border border-pink-100 bg-pink-50/60 p-4 text-sm text-gray-700">
-                      <p className="font-black text-gray-900 mb-2">{t("booking.selectedForAppointment", lang)}</p>
-                      <div className="space-y-1">
-                        {allSelectedServiceObjects.map((item) => (
-                          <div key={item.id} className="flex justify-between gap-4">
-                            <span className="truncate">{item.name}</span>
-                            <span className="whitespace-nowrap font-bold text-pink-600">{formatPrice(item.price)} · {formatDuration(item.duration)}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-3 border-t border-pink-100 pt-3 flex justify-between font-black">
-                        <span>{t("booking.totalPerPerson", lang)}</span>
-                        <span>{formatPrice(perPersonPrice)} · {formatDuration(totalDuration || 30)}</span>
-                      </div>
-                    </div>
-                  )}
-                </motion.div>
-              )}
-
-              {/* Add-ons / Upsell (Extras category) */}
-              {step === 1 && addonServiceOptions.length > 0 && (
-                <motion.div key="addons" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-4">
-                  <h3 className="text-lg font-bold mb-3 flex items-center gap-2"><Sparkles size={18} className="text-amber-500" /> {t("booking.addonsTitle", lang)}</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {addonServiceOptions.map((a) => (
-                      <button
-                        key={a.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedAddons(prev => prev.includes(a.id) ? prev.filter(id => id !== a.id) : [...prev, a.id]);
-                        }}
-                        className={cn(
-                          "text-left p-3 rounded-xl border text-sm flex items-center justify-between gap-2",
-                          selectedAddons.includes(a.id) ? "border-amber-400 bg-amber-50" : "border-gray-100 hover:border-amber-200"
-                        )}
-                      >
-                        <span className="truncate">{a.name}</span>
-                        <span className="font-bold text-amber-600 whitespace-nowrap">{formatPrice(a.price)}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[11px] text-gray-400 mt-1">{t("booking.addonsDesc", lang)}</p>
+                <motion.div
+                  key="step1"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                >
+                  <ServiceStep
+                    services={catalogue.services}
+                    selectedServiceId={serviceId}
+                    onSelectService={handleSelectService}
+                    status={catalogue.status}
+                  />
                 </motion.div>
               )}
 
               {step === 2 && (
-                <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                  <h3 className="text-xl sm:text-2xl font-black mb-5 text-gray-900">{t("booking.selectDate", lang)}</h3>
-                  <div className="bg-white rounded-3xl p-5 sm:p-7 shadow-sm border border-pink-100">
-                    <div className="flex items-center gap-3 mb-4 text-pink-600">
-                      <CalendarDays size={26} className="shrink-0" />
-                      <span className="text-lg sm:text-xl font-black">{t("booking.chooseDate", lang)}</span>
-                    </div>
-                    <input
-                      type="date"
-                      value={selectedDate}
-                      onChange={(e) => setSelectedDate(e.target.value)}
-                      min={new Date().toISOString().split("T")[0]}
-                      className="w-full min-h-16 px-5 py-4 rounded-2xl border-2 border-pink-200 bg-white focus:ring-4 focus:ring-pink-100 focus:border-pink-400 outline-none transition-all text-xl sm:text-2xl font-black text-gray-900 placeholder:text-gray-400"
-                    />
-                  </div>
+                <motion.div
+                  key="step2"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                >
+                  <DateStep
+                    date={date}
+                    onChangeDate={(d) => {
+                      setDate(d);
+                      setTime("");
+                    }}
+                    minDate={minDate}
+                  />
                 </motion.div>
               )}
 
               {step === 3 && (
-                <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                  <h3 className="text-lg font-bold mb-5">{t("booking.selectStaffTime", lang)}</h3>
-                  <div className="bg-white rounded-2xl p-6 shadow-sm border border-pink-100 space-y-6">
-                    <div>
-                      <label className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2"><User size={16} /> Staff availability</label>
-                      <p className="text-xs text-gray-400 mb-3">Only available technicians will show time slots.</p>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        <button onClick={() => setSelectedStaff("any")} className={cn(
-                          "p-3 rounded-xl border text-sm font-medium transition-all",
-                          selectedStaff === "any" ? "border-pink-400 bg-pink-50 text-pink-700" : "border-gray-200 hover:border-pink-200"
-                        )}>
-                          <Star size={14} className="inline mr-1" /> Any Staff
-                        </button>
-                        {staffList.map((st) => (
-                          <button key={st.id} onClick={() => setSelectedStaff(st.id)} className={cn(
-                            "p-3 rounded-xl border text-sm font-medium transition-all flex items-center gap-2 text-left",
-                            selectedStaff === st.id ? "border-pink-400 bg-pink-50 text-pink-700" : "border-gray-200 hover:border-pink-200"
-                          )}>
-                            <span className="w-8 h-8 rounded-full bg-pink-50 overflow-hidden flex items-center justify-center text-pink-400 shrink-0">
-                              {st.avatar ? <img src={st.avatar} alt={st.name} className="w-full h-full object-cover" /> : st.name.charAt(0)}
-                            </span>
-                            <span className="min-w-0">
-                              <span className="block truncate">{st.name}</span>
-                              <span className="mt-0.5 flex items-center gap-1 text-[10px] text-amber-600">
-                                <Star size={11} fill="currentColor" /> {st.ratingCount ? `${Number(st.ratingAverage || 0).toFixed(1)}/5 · ${st.ratingCount}` : "New"}
-                              </span>
-                              <span className={cn("mt-1 w-2 h-2 rounded-full inline-block", st.active ? "bg-green-500" : "bg-red-400")} />
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <p className="text-sm text-gray-500 mb-4">Available slots for {selectedDate} · total service time: {formatDuration(totalDuration || 30)}</p>
-                      {slotsLoading ? (
-                        <div className="rounded-xl bg-gray-50 p-6 text-center text-gray-400">Checking staff availability...</div>
-                      ) : slotsError ? (
-                        <div className="rounded-xl bg-amber-50 p-4 text-amber-700 text-sm">{slotsError}</div>
-                      ) : (
-                        <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-                          {availableSlots.map((slot) => (
-                            <button
-                              key={slot.time}
-                              onClick={() => {
-                                setSelectedTime(slot.time);
-                                setNumPeople((current) => Math.min(current, Math.max(1, slot.availableStaffCount)));
-                              }}
-                              className={cn(
-                                "py-3 px-4 rounded-xl text-sm font-semibold transition-all",
-                                selectedTime === slot.time
-                                  ? "bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-md shadow-pink-200"
-                                  : "bg-gray-50 text-gray-700 hover:bg-pink-50 hover:text-pink-600"
-                              )}
-                            >
-                              {slot.time}
-                              <span className="block text-[10px] opacity-70">{slot.availableStaffCount} staff available</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Multi-person / Group booking — bring friends, each person gets their own nail technician */}
-                    <div className="pt-4 border-t border-pink-100">
-                      <label className="text-sm font-semibold text-gray-700 mb-1 flex items-center gap-2">
-                        <Users size={16} /> How many people?
-                      </label>
-                      <p className="text-xs text-gray-400 mb-3">Booking for yourself only, or bringing friends? Each person gets their own technician and the same services you selected.</p>
-                      {!selectedTime ? (
-                        <div className="rounded-xl bg-gray-50 p-4 text-sm text-gray-500">
-                          Select a time first to see how many people can be served.
-                        </div>
-                      ) : (
-                        <>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {Array.from({ length: selectedSlotCapacity }, (_, i) => i + 1).map(n => (
-                              <button
-                                key={n}
-                                onClick={() => setNumPeople(n)}
-                                className={cn(
-                                  "min-w-11 px-4 py-2 rounded-xl border text-sm font-semibold transition",
-                                  numPeople === n ? "bg-pink-600 text-white border-pink-600" : "border-pink-200 hover:bg-pink-50"
-                                )}
-                              >
-                                {n} {n === 1 ? "person" : "people"}
-                              </button>
-                            ))}
-                          </div>
-                          <p className="text-xs text-gray-500 mt-2">
-                            {selectedSlotCapacity} technician{selectedSlotCapacity === 1 ? " is" : "s are"} free at {selectedTime}. Max group size = available technicians.
-                          </p>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                <motion.div
+                  key="step3"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                >
+                  <TimeStep
+                    technicians={catalogue.technicians}
+                    technicianChoice={technicianChoice}
+                    onChangeTechnician={handleTechnicianChange}
+                    slotsStatus={slotsStatus}
+                    offers={offers}
+                    selectedTime={time}
+                    onSelectTime={handleSelectTime}
+                    date={date}
+                    slotNotice={slotNotice}
+                  />
                 </motion.div>
               )}
 
               {step === 4 && (
-                <motion.div key="step4" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
-                  <h3 className="text-lg font-bold mb-5">{t("booking.confirmDetails", lang)}</h3>
-                  <div className="bg-white rounded-2xl p-6 shadow-sm border border-pink-100 space-y-5">
-                    {/* Phone Verification - Beautiful Block */}
-                      {/* DEPLOY_MARKER_1782910591294 - NEW OTP IN BOOKING - IF YOU SEE THIS THE NEW CODE IS LIVE */}
-
-                    <div className="rounded-2xl border-2 border-amber-300 bg-gradient-to-r from-amber-50 to-yellow-50 p-5 space-y-3 shadow-sm" data-otp-in-booking="true" >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="font-bold text-amber-900 text-base">Please verify your phone number via WhatsApp or SMS OTP before booking </p>
-                          <p className="text-xs text-amber-700 mt-0.5">This is required to prevent spam and fake bookings.</p>
-                        </div>
-                        {phoneVerified && (
-                          <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold flex items-center gap-1">✅ Verified</span>
-                        )}
-                      </div>
-
-                      <p className="text-sm text-amber-800">Code will be sent to: <span className="font-semibold">{formData.phone || "your phone number"}</span></p>
-
-                      {!otpSent ? (
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <select value={otpChannel} onChange={(e) => setOtpChannel(e.target.value as any)} className="px-3 py-2 rounded-xl border border-amber-300 bg-white text-sm focus:outline-none">
-                            <option value="auto">Auto (WhatsApp first)</option>
-                            <option value="whatsapp">WhatsApp</option>
-                            <option value="sms">SMS</option>
-                          </select>
-                          <button onClick={sendOTPForBooking} disabled={otpLoading || !formData.phone} className="px-6 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-sm font-semibold transition disabled:opacity-50">
-                            {otpLoading ? "Sending..." : "Send OTP Code"}
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <div className="flex flex-wrap gap-2 items-center">
-                            <input value={otpCode} onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))} placeholder="Enter 6-digit code" maxLength={6} className="flex-1 min-w-[140px] px-4 py-2 rounded-xl border border-amber-300 bg-white text-sm font-mono tracking-[6px] text-center focus:outline-none focus:ring-2 focus:ring-amber-400" />
-                            <button onClick={verifyOTPForBooking} disabled={otpLoading || otpCode.length < 4} className="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-semibold transition disabled:opacity-50">
-                              {otpLoading ? "Verifying..." : "Verify Code"}
-                            </button>
-                            <button onClick={() => { setOtpSent(false); setOtpCode(""); setOtpError(""); }} className="px-4 py-2 rounded-xl border border-amber-300 bg-white text-sm text-amber-700 hover:bg-amber-100">
-                              Resend
-                            </button>
-                          </div>
-                          <p className="text-xs text-amber-700">Check your WhatsApp or SMS for the code.</p>
-                        </div>
-                      )}
-
-                      {otpError && <p className="text-red-600 text-xs font-semibold mt-1">⚠️ {otpError}</p>}
-                      {otpMessage && <p className="text-emerald-700 text-xs font-semibold mt-1">{otpMessage}</p>}
-                    </div>
-
-                    {/* Contact info */}
-                    <div className="grid sm:grid-cols-2 gap-4">
-                      <div className="relative">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-user absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                        <input placeholder="Full Name *" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="w-full pl-10 p-4 rounded-xl border border-pink-200 focus:ring-2 focus:ring-pink-300 outline-none" />
-                      </div>
-                      <div className="relative">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-phone absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
-                        <input placeholder="Phone Number *" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })} className="w-full pl-10 p-4 rounded-xl border border-pink-200 focus:ring-2 focus:ring-pink-300 outline-none" />
-                      </div>
-                    </div>
-
-                    {/* Verified account */}
-                    <div className="rounded-3xl border border-pink-100 bg-gradient-to-r from-pink-50/80 to-rose-50/70 p-4 sm:p-5 space-y-4">
-                      <div className="grid grid-cols-[48px_1fr] gap-3 sm:gap-4 items-start">
-                        <div className="h-12 w-12 shrink-0 rounded-2xl bg-white text-pink-600 shadow-sm flex items-center justify-center"><svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"/></svg></div>
-                        <div className="min-w-0">
-                          <p className="text-xs font-black uppercase tracking-wide text-pink-500">{accountUsesEmail ? "Verified account email" : "Verified account ID"}</p>
-                          <p className="mt-1 break-all text-base sm:text-lg font-black leading-snug text-gray-900">{user?.email}</p>
-                          <p className="mt-1 text-sm text-gray-500">This verified account is used for anti-spam protection, booking updates, and any deposit link if required.</p>
-                        </div>
-                      </div>
-                      <div className="rounded-2xl bg-white/80 p-3 sm:p-4 border border-pink-100">
-                        <label className="mb-2 block text-xs font-black uppercase tracking-wide text-gray-500">{accountUsesEmail ? "Re-type the same email" : "Re-type the same account ID"}</label>
-                        <input
-                          placeholder={user?.email || (accountUsesEmail ? "Type your account email again" : "Type your account ID again")}
-                          type={accountUsesEmail ? "email" : "text"}
-                          value={formData.emailConfirm}
-                          onChange={(e) => setFormData({ ...formData, emailConfirm: e.target.value })}
-                          className={cn("w-full min-h-14 px-4 rounded-xl border bg-white focus:ring-4 outline-none text-base sm:text-lg font-semibold", formData.emailConfirm && !emailConfirmMatchesAccount ? "border-red-300 focus:ring-red-100" : "border-pink-200 focus:ring-pink-100")}
-                        />
-                        <p className={cn("text-sm mt-2 break-words", formData.emailConfirm && !emailConfirmMatchesAccount ? "text-red-500 font-semibold" : "text-gray-500")}>Must match your signed-in account: <span className="font-bold break-all">{user?.email}</span></p>
-                      </div>
-                    </div>
-
-                                                            <div className="rounded-xl bg-pink-50/60 border border-pink-100 p-4 text-sm text-gray-700">
-                      <span className="font-semibold">Staff:</span> {selectedStaff === "any" ? "Any available staff" : staffList.find((st) => st.id === selectedStaff)?.name || "Selected staff"} · <span className="font-semibold">Time:</span> {selectedTime}
-                    </div>
-
-                    {/* Upload design */}
-                    <div>
-                      <label className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2"><ImagePlus size={16} /> Upload Design Picture</label>
-                      <div className="border-2 border-dashed border-pink-200 rounded-xl p-4 text-center hover:bg-pink-50/50 transition-colors">
-                        {uploadedImage ? (
-                          <div className="relative inline-block">
-                            <img src={uploadedImage} alt="Design preview" className="w-32 h-32 object-cover rounded-xl" />
-                            <button onClick={removeImage} className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center"><X size={14} /></button>
-                          </div>
-                        ) : (
-                          <label className="cursor-pointer flex flex-col items-center gap-2">
-                            <Upload size={24} className="text-pink-400" />
-                            <span className="text-sm text-gray-500">Click to upload a design picture</span>
-                            <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                          </label>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Notes */}
-                    <div className="relative">
-                      <MessageSquare size={18} className="absolute left-3 top-4 text-gray-400" />
-                      <textarea placeholder="Special requests or notes..." value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="w-full pl-10 p-4 rounded-xl border border-pink-200 focus:ring-2 focus:ring-pink-300 outline-none min-h-[100px] resize-y" />
-                    </div>
-
-                    {/* Promo code */}
-                    <div>
-                      <label className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-2"><Tag size={16} /> Promotion Code</label>
-                      <div className="flex gap-2">
-                        <input placeholder="Enter promo code (e.g. NAIL20)" value={formData.promoCode} onChange={(e) => setFormData({ ...formData, promoCode: e.target.value })} className="flex-1 p-3 rounded-xl border border-pink-200 focus:ring-2 focus:ring-pink-300 outline-none text-sm" />
-                        <button onClick={applyPromo} className="btn-primary px-5">Apply</button>
-                      </div>
-                      {promoError && <p className="text-red-500 text-xs mt-1">{promoError}</p>}
-                      {discount > 0 && <p className="text-green-600 text-xs mt-1">Discount applied: -{formatPrice(discount)}</p>}
-                    </div>
-
-                    {/* Medical checkboxes */}
-                    <div className="space-y-2">
-                      <p className="text-sm font-semibold text-gray-700 flex items-center gap-2"><Stethoscope size={16} /> Health Confirmation</p>
-                      <label className="flex items-start gap-3 p-3 rounded-xl border border-gray-100 hover:bg-pink-50/30 cursor-pointer">
-                        <input type="checkbox" checked={formData.healthConfirmed} onChange={(e) => setFormData({ ...formData, healthConfirmed: e.target.checked })} className="mt-1 w-5 h-5 rounded border-pink-300 text-pink-600 focus:ring-pink-500" />
-                        <span className="text-sm text-gray-600">I confirm I am not experiencing any health conditions that would affect this service</span>
-                      </label>
-                      <label className="flex items-start gap-3 p-3 rounded-xl border border-gray-100 hover:bg-pink-50/30 cursor-pointer">
-                        <input type="checkbox" checked={formData.allergiesConfirmed} onChange={(e) => setFormData({ ...formData, allergiesConfirmed: e.target.checked })} className="mt-1 w-5 h-5 rounded border-pink-300 text-pink-600 focus:ring-pink-500" />
-                        <span className="text-sm text-gray-600">I confirm I do not have allergies to cosmetics or chemicals</span>
-                      </label>
-                    </div>
-
-                    {/* Terms */}
-                    <label className="flex items-start gap-3 p-3 rounded-xl border border-pink-100 bg-pink-50/30 cursor-pointer">
-                      <input type="checkbox" checked={formData.termsAccepted} onChange={(e) => setFormData({ ...formData, termsAccepted: e.target.checked })} className="mt-1 w-5 h-5 rounded border-pink-300 text-pink-600 focus:ring-pink-500" required />
-                      <span className="text-sm text-gray-600">I agree to the <Link href="/terms" className="text-pink-600 underline">Terms & Conditions</Link>, <Link href="/privacy" className="text-pink-600 underline">Privacy Policy</Link>, and consent to the treatment.</span>
-                    </label>
-                  </div>
-
-                  {/* Booking Summary */}
-                  <div className="mt-6 bg-gradient-to-r from-pink-50 to-rose-50 rounded-2xl p-6 border border-pink-100">
-                    <h4 className="font-bold text-gray-900 mb-3 flex items-center gap-2"><ShieldCheck size={18} /> Booking Summary</h4>
-                    <div className="space-y-2 text-sm">
-                      <p className="flex justify-between gap-4"><span className="text-gray-500">Services:</span> <span className="font-medium text-right">{selectedServiceObjects.length ? selectedServiceObjects.map(s => s.name).join(", ") : "Select service(s)"}</span></p>
-                      {selectedAddonObjects.length > 0 && <p className="flex justify-between gap-4"><span className="text-gray-500">Add-ons:</span> <span className="font-medium text-amber-600 text-right">{selectedAddonObjects.map(s => s.name).join(", ")}</span></p>}
-                      <p className="flex justify-between"><span className="text-gray-500">Total service time:</span> <span className="font-medium">{formatDuration(totalDuration || 30)}</span></p>
-                      <p className="flex justify-between"><span className="text-gray-500">People:</span> <span className="font-medium">{numPeople}</span></p>
-                      <p className="flex justify-between"><span className="text-gray-500">Price per person:</span> <span className="font-medium">{formatPrice(perPersonPrice)}</span></p>
-                      <p className="flex justify-between">
-                        <span className="text-gray-500">Total:</span>
-                        <span className="font-bold text-pink-600">
-                          {discount > 0 ? (
-                            <>
-                              <span className="line-through text-gray-400 text-xs mr-2">{formatPrice(subtotalPrice)}</span>
-                              {formatPrice(finalPrice)}
-                            </>
-                          ) : (
-                            <>{formatPrice(subtotalPrice)}</>
-                          )}
-                        </span>
-                      </p>
-                      {discount > 0 && <p className="flex justify-between"><span className="text-gray-500">Discount:</span> <span className="text-green-600 font-bold">-{formatPrice(discount)}</span></p>}
-                      <p className="flex justify-between"><span className="text-gray-500">Date:</span> <span className="font-medium">{selectedDate}</span></p>
-                      <p className="flex justify-between"><span className="text-gray-500">Time:</span> <span className="font-medium">{selectedTime}</span></p>
-                      <p className="flex justify-between"><span className="text-gray-500">Staff:</span> <span className="font-medium">{selectedStaff === "any" ? "Any Staff" : staffList.find(s => s.id === selectedStaff)?.name}</span></p>
-                    </div>
-                  </div>
-
-                  {submitRequirements.length > 0 && (
-                    <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-                      <p className="font-bold mb-2">Before submitting, please:</p>
-                      <ul className="list-disc pl-5 space-y-1">
-                        {submitRequirements.map((item) => <li key={item}>{item}</li>)}
-                      </ul>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={handleSubmit}
-                    disabled={!step4Valid || loading}
-                    className={cn(
-                      "w-full mt-6 py-4 text-lg font-bold rounded-2xl transition-all",
-                      step4Valid && !loading
-                        ? "bg-gradient-to-r from-pink-500 to-rose-500 text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5"
-                        : "bg-gray-100 text-gray-400 cursor-not-allowed"
-                    )}
-                  >
-                    {loading ? t("booking.processing", lang) : t("booking.submit", lang)}
-                  </button>
+                <motion.div
+                  key="step4"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                >
+                  <DetailsStep
+                    service={selectedService}
+                    date={date}
+                    offer={selectedOffer}
+                    technicianChoice={technicianChoice}
+                    technicians={catalogue.technicians}
+                  />
                 </motion.div>
               )}
             </AnimatePresence>
@@ -858,11 +320,17 @@ export default function BookingPage() {
             {step < 4 && (
               <div className="flex gap-4 mt-8">
                 {step > 1 && (
-                  <button onClick={handleBack} className="btn-secondary flex-1">
-                    <ChevronLeft size={18} className="mr-2" /> {t("booking.back", lang)}
+                  <button
+                    type="button"
+                    onClick={handleBack}
+                    className="btn-secondary flex-1"
+                  >
+                    <ChevronLeft size={18} className="mr-2" />
+                    {t("booking.back", lang)}
                   </button>
                 )}
                 <button
+                  type="button"
                   onClick={handleNext}
                   disabled={!canProceed}
                   className={cn(
@@ -870,13 +338,30 @@ export default function BookingPage() {
                     !canProceed && "opacity-50 cursor-not-allowed"
                   )}
                 >
-                  {t("booking.next", lang)} <ChevronRight size={18} className="ml-2" />
+                  {t("booking.next", lang)}
+                  <ChevronRight size={18} className="ml-2" />
+                </button>
+              </div>
+            )}
+
+            {step === 4 && (
+              <div className="flex gap-4 mt-8">
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="btn-secondary flex-1"
+                >
+                  <ChevronLeft size={18} className="mr-2" />
+                  {t("booking.back", lang)}
                 </button>
               </div>
             )}
 
             <div className="text-center mt-6">
-              <Link href="/" className="text-sm text-gray-400 hover:text-pink-500 transition-colors">
+              <Link
+                href="/"
+                className="text-sm text-gray-400 hover:text-pink-500 transition-colors"
+              >
                 {t("booking.backToHome", lang)}
               </Link>
             </div>
