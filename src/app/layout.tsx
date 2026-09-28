@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { AuthProvider } from "@/context/AuthContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import ContactBubble from "@/components/ContactBubble";
 
@@ -18,12 +17,10 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en" className="h-full antialiased">
       <body className="min-h-full flex flex-col font-sans">
-        <AuthProvider>
-          <LanguageProvider>
-            {children}
-            <ContactBubble />
-          </LanguageProvider>
-        </AuthProvider>
+        <LanguageProvider>
+          {children}
+          <ContactBubble />
+        </LanguageProvider>
       </body>
     </html>
   );
