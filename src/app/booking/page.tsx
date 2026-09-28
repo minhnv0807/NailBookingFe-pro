@@ -23,6 +23,17 @@ import ServiceStep from "@/components/booking/ServiceStep";
 import DateStep from "@/components/booking/DateStep";
 import TimeStep from "@/components/booking/TimeStep";
 import DetailsStep from "@/components/booking/DetailsStep";
+import BookingSuccess from "@/components/booking/BookingSuccess";
+import { type TurnstileHandle } from "@/components/booking/TurnstileWidget";
+import {
+  bookingErrorMessage,
+  buildBookingRequest,
+  isPhoneError,
+  phoneLooksDialable,
+} from "@/lib/vitech/booking";
+import { vitechConfig } from "@/lib/vitech/env";
+import { VitechError, type CreatedBooking } from "@/lib/vitech/client";
+import salonData from "@/data/salon-data.json";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 
@@ -43,8 +54,36 @@ export default function BookingPage() {
   const [time, setTime] = useState<string>("");
   const [slotNotice, setSlotNotice] = useState<string>("");
 
+  // Customer contact info (Step 4)
+  const [name, setName] = useState<string>("");
+  const [phone, setPhone] = useState<string>("");
+  const [email, setEmail] = useState<string>("");
+  const [notes, setNotes] = useState<string>("");
+  const [promoCode, setPromoCode] = useState<string>("");
+  const [phoneError, setPhoneError] = useState<string>("");
+  const [bookingError, setBookingError] = useState<string>("");
+  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [turnstileToken, setTurnstileToken] = useState<string>("");
+  const [confirmed, setConfirmed] = useState<{ booking: CreatedBooking; technicianId: string } | null>(null);
+  const [hasRewards, setHasRewards] = useState<boolean>(false);
+
+  const turnstileRef = useRef<TurnstileHandle>(null);
+  const keyRef = useRef<{ key: string; fingerprint: string } | null>(null);
+
   const minDate = todayIn(catalogue.timezone || "Europe/London");
   const requestSeq = useRef(0);
+
+  // Check public rewards on load
+  useEffect(() => {
+    vitech
+      .getPublicRewards()
+      .then((res) => {
+        if (res?.rewards && res.rewards.length > 0) {
+          setHasRewards(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Initialize service from localStorage or default
   useEffect(() => {
@@ -175,6 +214,64 @@ export default function BookingPage() {
     setTime(offer.time);
   }
 
+  async function handleConfirmBooking() {
+    if (!selectedService || !selectedOffer || !name.trim() || !phoneLooksDialable(phone)) return;
+    const needsTurnstile = Boolean(vitechConfig.turnstileSiteKey);
+    if (needsTurnstile && !turnstileToken) return;
+
+    const technicianId =
+      technicianChoice === "any" ? selectedOffer.technicianIds[0] : technicianChoice;
+
+    const body = buildBookingRequest({
+      shopSlug: vitechConfig.shopSlug,
+      serviceId: selectedService.id,
+      technicianId,
+      date,
+      time: selectedOffer.time,
+      name,
+      phone,
+      email,
+      notes,
+      promoCode,
+      turnstileToken,
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { turnstile_token: _token, ...hashed } = body;
+    const fingerprint = JSON.stringify(hashed);
+    if (!keyRef.current || keyRef.current.fingerprint !== fingerprint) {
+      keyRef.current = { key: crypto.randomUUID(), fingerprint };
+    }
+
+    setSubmitting(true);
+    setBookingError("");
+    setPhoneError("");
+
+    try {
+      const res = await vitech.createBooking(body, keyRef.current.key);
+      keyRef.current = null;
+      setConfirmed({ booking: res.booking, technicianId });
+    } catch (error) {
+      turnstileRef.current?.reset();
+      const status = error instanceof VitechError ? error.status : 0;
+      const detail = error instanceof Error ? error.message : "";
+
+      if (status === 422 && isPhoneError(detail)) {
+        setPhoneError(detail);
+      } else if (status === 409 && detail === "That technician is already booked for this time") {
+        setStep(3);
+        setSlotNotice("That time was just taken — please choose another.");
+      } else if (status === 422 && detail.startsWith("That appointment time")) {
+        setStep(3);
+        setSlotNotice(detail);
+      } else {
+        setBookingError(bookingErrorMessage(status, detail));
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const canProceed =
     (step === 1 && Boolean(serviceId)) ||
     (step === 2 && Boolean(date) && date >= minDate) ||
@@ -191,6 +288,28 @@ export default function BookingPage() {
     if (step > 1) {
       setStep((prev) => (prev - 1) as 1 | 2 | 3 | 4);
     }
+  }
+
+  if (confirmed) {
+    const technicianName =
+      catalogue.technicians.find((t) => t.id === confirmed.technicianId)?.name ||
+      "Any available technician";
+
+    return (
+      <>
+        <Navbar />
+        <main className="min-h-screen pt-28 pb-16 bg-gradient-to-b from-pink-50/40 via-white to-pink-50/20">
+          <BookingSuccess
+            booking={confirmed.booking}
+            serviceName={selectedService?.name || "Service"}
+            technicianName={technicianName}
+            salonPhone={salonData.salon.phone}
+            hasRewards={hasRewards}
+          />
+        </main>
+        <Footer />
+      </>
+    );
   }
 
   return (
@@ -311,6 +430,24 @@ export default function BookingPage() {
                     offer={selectedOffer}
                     technicianChoice={technicianChoice}
                     technicians={catalogue.technicians}
+                    shopName={catalogue.shopName}
+                    name={name}
+                    onChangeName={setName}
+                    phone={phone}
+                    onChangePhone={setPhone}
+                    email={email}
+                    onChangeEmail={setEmail}
+                    notes={notes}
+                    onChangeNotes={setNotes}
+                    promoCode={promoCode}
+                    onChangePromoCode={setPromoCode}
+                    phoneError={phoneError}
+                    bookingError={bookingError}
+                    submitting={submitting}
+                    onConfirm={handleConfirmBooking}
+                    turnstileToken={turnstileToken}
+                    onTurnstileToken={setTurnstileToken}
+                    turnstileRef={turnstileRef}
                   />
                 </motion.div>
               )}

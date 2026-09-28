@@ -59,10 +59,14 @@ export interface CreatedBooking {
   customer_phone: string;
   booking_date: string;
   booking_time: string;
+  end_time?: string;
   status: string;
   total_price: number | string;
+  charged_price?: number | string;
+  list_price?: number | string;
   created_at?: string;
 }
+
 
 export interface BookingCreateResponse {
   booking: CreatedBooking;
